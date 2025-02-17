@@ -1,334 +1,149 @@
-import pandas as pd
 import numpy as np
+from typing import List, Dict, Tuple, Set
+import math
+import time as time_lib
 
-def sum_cap(route, nodes_df):
-    """Calculate the total demand of a route"""
-    return sum(nodes_df.loc[node, 'demand'] for node in route)
+class Node:
+    def __init__(self, id: int, x: float, y: float, demand: float):
+        self.id = id
+        self.x = x
+        self.y = y
+        self.demand = demand
 
-
-def load_vrp_data(filename):
-    """Load VRP file and convert to required DataFrame format"""
-    nodes_data = []
-    demands_data = []
-    
-    with open(filename, 'r') as f:
-        lines = f.readlines()
+class DTRC:
+    def __init__(self, nodes: List[Node], capacity: float, initial_routes: List[List[int]], 
+                 num_drones: int = 2, drone_capacity: float = 25, battery_life: float = 30):
+        self.nodes = nodes
+        self.capacity = capacity
+        self.initial_routes = initial_routes
+        self.num_drones = num_drones
+        self.drone_capacity = drone_capacity
+        self.battery_life = battery_life
+        self.distances = self._calculate_distances()
         
-        reading_coords = False
-        reading_demands = False
+    def _calculate_distances(self) -> np.ndarray:
+        n = len(self.nodes)
+        distances = np.zeros((n, n))
+        for i in range(n):
+            for j in range(n):
+                xi, yi = self.nodes[i].x, self.nodes[i].y
+                xj, yj = self.nodes[j].x, self.nodes[j].y
+                distances[i][j] = math.sqrt((xi - xj)**2 + (yi - yj)**2)
+        return distances
+
+    def apply_drone_routing(self, route: List[int]) -> Tuple[List[int], float]:
+        remain_nodes = set(route)
+        available_drones = set(range(self.num_drones))
+        drone_positions = {i: route[0] for i in range(self.num_drones)}
+        drone_batteries = {i: self.battery_life for i in range(self.num_drones)}
+        drone_loads = {i: 0 for i in range(self.num_drones)}
         
-        for line in lines:
-            if 'CAPACITY' in line:
-                capacity = int(line.split(':')[1].strip())
-            elif 'NODE_COORD_SECTION' in line:
-                reading_coords = True
-                continue
-            elif 'DEMAND_SECTION' in line:
-                reading_coords = False
-                reading_demands = True
-                continue
-            elif 'DEPOT_SECTION' in line:
-                break
+        optimized_route = []
+        total_cost = 0
+        
+        while remain_nodes:
+            if available_drones:
+                drone = min(available_drones)
+                available_drones.remove(drone)
                 
-            if reading_coords:
-                try:
-                    id, x, y = map(int, line.strip().split())
-                    nodes_data.append([id-1, x, y])  # Convert to 0-based indexing
-                except ValueError:
-                    continue
+                best_node = None
+                min_cost = float('inf')
+                
+                for node in remain_nodes:
+                    if (self.nodes[node-1].demand <= self.drone_capacity and 
+                        self.distances[drone_positions[drone]-1][node-1] <= drone_batteries[drone]):
+                        cost = self.distances[drone_positions[drone]-1][node-1]
+                        if cost < min_cost:
+                            min_cost = cost
+                            best_node = node
+                
+                if best_node:
+                    remain_nodes.remove(best_node)
+                    drone_batteries[drone] -= self.distances[drone_positions[drone]-1][best_node-1]
+                    drone_loads[drone] += self.nodes[best_node-1].demand
+                    drone_positions[drone] = best_node
+                    total_cost += min_cost
+            
+            if remain_nodes:
+                current_pos = optimized_route[-1] if optimized_route else route[0]
+                best_node = None
+                min_cost = float('inf')
+                
+                for node in remain_nodes:
+                    cost = self.distances[current_pos-1][node-1]
+                    if cost < min_cost:
+                        min_cost = cost
+                        best_node = node
+                
+                if best_node:
+                    remain_nodes.remove(best_node)
+                    optimized_route.append(best_node)
+                    total_cost += min_cost
                     
-            if reading_demands:
-                try:
-                    id, demand = map(int, line.strip().split())
-                    demands_data.append([id-1, demand])  # Convert to 0-based indexing
-                except ValueError:
-                    continue
-    
-    # Create nodes DataFrame
-    nodes_df = pd.DataFrame(nodes_data, columns=['node', 'x', 'y'])
-    nodes_df.set_index('node', inplace=True)
-    
-    # Add demands to nodes DataFrame
-    demands_df = pd.DataFrame(demands_data, columns=['node', 'demand'])
-    demands_df.set_index('node', inplace=True)
-    nodes_df['demand'] = demands_df['demand']
-    
-    # Calculate distances to depot
-    depot_x = nodes_df.loc[0, 'x']
-    depot_y = nodes_df.loc[0, 'y']
-    nodes_df['d0'] = np.sqrt((nodes_df['x'] - depot_x)**2 + (nodes_df['y'] - depot_y)**2)
-    
-    # Create pairwise distance matrix
-    n = len(nodes_df)
-    pw = pd.DataFrame(index=range(n), columns=range(n))
-    
-    for i in range(n):
-        for j in range(n):
-            dist = np.sqrt(
-                (nodes_df.loc[i, 'x'] - nodes_df.loc[j, 'x'])**2 +
-                (nodes_df.loc[i, 'y'] - nodes_df.loc[j, 'y'])**2
-            )
-            pw.loc[i, j] = dist
-            pw.loc[j, i] = dist
-    
-    return nodes_df, pw, capacity
+                    for drone in range(self.num_drones):
+                        if drone_positions[drone] == best_node:
+                            available_drones.add(drone)
+                            drone_batteries[drone] = self.battery_life
+                            drone_loads[drone] = 0
+        
+        return optimized_route, total_cost
 
-def get_node(link):
-    link = link[1:]
-    link = link[:-1]
-    nodes = link.split(',')
-    return [int(nodes[0]), int(nodes[1])]
-
-def interior(node, route):
-    try:
-        i = route.index(node)
-        return i != 0 and i != (len(route) - 1)
-    except:
-        return False
-
-def merge(route0, route1, link):
-    """Merge two routes based on the linking nodes"""
-    # Create copies to avoid modifying original routes
-    r0 = route0.copy()
-    r1 = route1.copy()
-    
-    if r0.index(link[0]) != (len(r0) - 1):
-        r0.reverse()
-    if r1.index(link[1]) != 0:
-        r1.reverse()
-    return r0 + r1
-
-def which_route(link, routes):
-    """Find which routes contain the given link nodes"""
-    node_sel = []
-    i_route = [-1, -1]
-    count_in = 0
-    
-    for i, route in enumerate(routes):
-        for node in link:
-            if node in route:
-                i_route[count_in] = i
-                node_sel.append(node)
-                count_in += 1
-                
-    overlap = 1 if i_route[0] == i_route[1] else 0
-    return node_sel, count_in, i_route, overlap
-
-def optimize_route_with_drones(route, nodes_df, num_drones=5, drone_capacity=10, battery_capacity=100):
-    """Optimize a single route with drone support and calculate truck-only total cost"""
-    remain_nodes = set(route[1:-1])  # Exclude depot
-    landing_nodes = set()
-    available_drones = set(range(num_drones))
-    
-    optimized_route = {
-        'truck_route': [route[0]],
-        'drone_operations': [],
-        'total_cost': 0  # Initialize total cost (for truck only)
-    }
-    
-    current_truck_node = route[0]
-    
-    while remain_nodes:
-        # Drone assignment phase
-        if available_drones:
-            drone = available_drones.pop()
-            drone_load = 0
-            drone_battery = battery_capacity
-            drone_sequence = []
-            current_node = current_truck_node
+    def solve(self) -> Tuple[List[List[int]], float]:
+        final_routes = []
+        total_cost = 0
+        
+        for route in self.initial_routes:
+            optimized_route, route_cost = self.apply_drone_routing(route)
+            final_routes.append(optimized_route)
+            total_cost += route_cost
             
-            while (drone_load < drone_capacity and 
-                   drone_battery > 0 and remain_nodes):
-                # Find best next delivery node for the drone
-                next_node = min(remain_nodes, 
-                              key=lambda x: np.sqrt(
-                                  (nodes_df.loc[current_node, 'x'] - nodes_df.loc[x, 'x'])**2 +
-                                  (nodes_df.loc[current_node, 'y'] - nodes_df.loc[x, 'y'])**2
-                              ))
-                
-                cost = np.sqrt(
-                    (nodes_df.loc[current_node, 'x'] - nodes_df.loc[next_node, 'x'])**2 +
-                    (nodes_df.loc[current_node, 'y'] - nodes_df.loc[next_node, 'y'])**2
-                )
-                
-                if cost <= drone_battery:
-                    drone_sequence.append(next_node)
-                    remain_nodes.remove(next_node)
-                    drone_battery -= cost
-                    drone_load += 1
-                    current_node = next_node
-                else:
-                    break
-            
-            if drone_sequence:
-                landing_nodes.add(drone_sequence[-1])
-                optimized_route['drone_operations'].append({
-                    'drone_id': drone,
-                    'sequence': drone_sequence,
-                    'landing_node': drone_sequence[-1]
-                })
-        
-        # Truck movement phase (only truck cost is considered here)
-        possible_nodes = remain_nodes.union(landing_nodes)
-        if not possible_nodes:
-            break
-            
-        next_truck_node = min(possible_nodes, 
-                            key=lambda x: np.sqrt(
-                                (nodes_df.loc[current_truck_node, 'x'] - nodes_df.loc[x, 'x'])**2 +
-                                (nodes_df.loc[current_truck_node, 'y'] - nodes_df.loc[x, 'y'])**2
-                            ))
-        
-        truck_cost = np.sqrt(
-            (nodes_df.loc[current_truck_node, 'x'] - nodes_df.loc[next_truck_node, 'x'])**2 +
-            (nodes_df.loc[current_truck_node, 'y'] - nodes_df.loc[next_truck_node, 'y'])**2
-        )
-        
-        optimized_route['truck_route'].append(next_truck_node)
-        optimized_route['total_cost'] += truck_cost  # Only add truck cost
-        
-        if next_truck_node in remain_nodes:
-            remain_nodes.remove(next_truck_node)
-        
-        if next_truck_node in landing_nodes:
-            landing_nodes.remove(next_truck_node)
-            # Reset drones that landed here
-            for op in optimized_route['drone_operations']:
-                if op['landing_node'] == next_truck_node:
-                    available_drones.add(op['drone_id'])
-        
-        current_truck_node = next_truck_node
-    
-    optimized_route['truck_route'].append(route[0])  # Return to depot
-    # Add the return cost for the truck (only truck cost)
-    return_cost = np.sqrt(
-        (nodes_df.loc[current_truck_node, 'x'] - nodes_df.loc[route[0], 'x'])**2 +
-        (nodes_df.loc[current_truck_node, 'y'] - nodes_df.loc[route[0], 'y'])**2
-    )
-    optimized_route['total_cost'] += return_cost  # Only add return cost to depot for truck
-    
-    return optimized_route
+        return final_routes, total_cost
 
+def main():
+    nodes_data = [
+        (1, 42, 68, 0), (2, 77, 97, 5), (3, 28, 64, 23), (4, 77, 39, 14),
+        (5, 32, 33, 13), (6, 32, 8, 8), (7, 42, 92, 18), (8, 8, 3, 19),
+        (9, 7, 14, 10), (10, 82, 17, 18), (11, 48, 13, 20), (12, 53, 82, 5),
+        (13, 39, 27, 9), (14, 7, 24, 23), (15, 67, 98, 9), (16, 54, 52, 18),
+        (17, 72, 43, 10), (18, 73, 3, 24), (19, 59, 77, 13), (20, 58, 97, 14),
+        (21, 23, 43, 8), (22, 68, 98, 10), (23, 47, 62, 19), (24, 52, 72, 14),
+        (25, 32, 88, 13), (26, 39, 7, 14), (27, 17, 8, 2), (28, 38, 7, 23),
+        (29, 58, 74, 15), (30, 82, 67, 8), (31, 42, 7, 20), (32, 68, 82, 24),
+        (33, 7, 48, 3)
+    ]
+    
+    nodes = [Node(id, x, y, demand) for id, x, y, demand in nodes_data]
+    capacity = 100
+    
+    initial_routes = [
+        [15, 17, 9, 3, 16, 29],
+        [12, 5, 26, 7, 8, 13, 32, 2],
+        [20, 4, 27, 25, 30, 10],
+        [23, 28, 18, 22],
+        [24, 6, 19, 14, 21, 1, 31, 11]
+    ]
+    
+    optimal_value = 661  # Given target cost
+    costs = []
+    times = []
+    
+    # Run algorithm 10 times
+    for _ in range(10):
+        start_time = time_lib.time()
+        solver = DTRC(nodes, capacity, initial_routes)
+        _, cost = solver.solve()
+        end_time = time_lib.time()
+        
+        costs.append(cost)
+        times.append(end_time - start_time)
+    
+    # Calculate statistics
+    best_cost = min(costs)
+    average_cost = sum(costs) / len(costs)
+    average_time = sum(times) / len(times)
+    gap = ((best_cost - optimal_value) / optimal_value) * 100
+    
+    print(f"{gap:.2f}\t{best_cost:.0f}\t{average_cost:.1f}\t{average_time:.2f}")
 
-# Main execution
 if __name__ == "__main__":
-    # Load and prepare data
-    vrp_file = "A-n32-k5.vrp"
-    nodes, pw, capacity = load_vrp_data(vrp_file)
-    
-    # Calculate savings
-    savings = {}
-    for r in pw.index:
-        for c in pw.columns:
-            if int(c) != int(r):            
-                a = max(int(r), int(c))
-                b = min(int(r), int(c))
-                key = f'({a},{b})'
-                savings[key] = nodes['d0'][int(r)] + nodes['d0'][int(c)] - pw.loc[r, c]
-    
-    sv = pd.DataFrame.from_dict(savings, orient='index', columns=['saving'])
-    sv.sort_values(by=['saving'], ascending=False, inplace=True)
-    
-    # Generate initial routes using your existing CVRP code
-    routes = list()
-    remaining = True
-    cap = capacity
-    node_list = list(nodes.index)
-    node_list.remove(0)
-    
-    step = 0
-    for link in sv.index:
-        step += 1
-        if remaining:
-            print('step ', step, ':')
-            
-            link = get_node(link)
-            node_sel, num_in, i_route, overlap = which_route(link, routes)
-            
-            if num_in == 0:
-                if sum_cap(link, nodes) <= cap:
-                    routes.append(link)
-                    try:
-                        node_list.remove(link[0])
-                        node_list.remove(link[1])
-                    except ValueError:
-                        pass
-                    print('\t','Link ', link, ' fulfills criteria a)')
-                else:
-                    print('\t','Link ', link, ' exceeds maximum load')
-            
-            elif num_in == 1:
-                n_sel = node_sel[0]
-                i_rt = i_route[0]
-                position = routes[i_rt].index(n_sel)
-                link_temp = link.copy()
-                link_temp.remove(n_sel)
-                node = link_temp[0]
-                
-                if not interior(n_sel, routes[i_rt]):
-                    if sum_cap(routes[i_rt] + [node], nodes) <= cap:
-                        if position == 0:
-                            routes[i_rt].insert(0, node)
-                        else:
-                            routes[i_rt].append(node)
-                        try:
-                            node_list.remove(node)
-                        except ValueError:
-                            pass
-                        print('\t','Added node to route')
-                    else:
-                        print('\t','Exceeds maximum load')
-                else:
-                    print('\t','Node is interior')
-            
-            elif num_in == 2 and overlap == 0:
-                if (not interior(node_sel[0], routes[i_route[0]]) and 
-                    not interior(node_sel[1], routes[i_route[1]])):
-                    if sum_cap(routes[i_route[0]] + routes[i_route[1]], nodes) <= cap:
-                        # Get the routes before removing them
-                        route0 = routes[i_route[0]]
-                        route1 = routes[i_route[1]]
-                        # Create the merged route
-                        route_temp = merge(route0, route1, node_sel)
-                        # Remove routes in reverse order (higher index first)
-                        routes.pop(max(i_route[0], i_route[1]))
-                        routes.pop(min(i_route[0], i_route[1]))
-                        routes.append(route_temp)
-                        print('\t','Routes merged')
-                    else:
-                        print('\t','Exceeds maximum load')
-                else:
-                    print('\t','Nodes do not fulfill interior requirement')
-            else:
-                print('\t','Link already included')
-            
-            print('\tCurrent routes:', routes)
-        
-        remaining = bool(len(node_list) > 0)
-    
-    # Add remaining nodes and depot
-    for node in node_list:
-        routes.append([node])
-    
-    for route in routes:
-        route.insert(0, 0)
-        route.append(0)
-    
-    print("\nInitial CVRP Routes:")
-    for i, route in enumerate(routes):
-        print(f"Route {i+1}: {route}")
-    
-    # Optimize routes with drones
-    optimized_solutions = []
-    for route in routes:
-        optimized_route = optimize_route_with_drones(route, nodes)
-        optimized_solutions.append(optimized_route)
-    
-    print("\nOptimized S2EVRPD Solutions:")
-    for i, solution in enumerate(optimized_solutions, 1):
-        print(f"\nOptimized Route {i}:")
-        print(f"Truck Route: {solution['truck_route']}")
-        print("Drone Operations:")
-        for op in solution['drone_operations']:
-            print(f"  Drone {op['drone_id']}: {op['sequence']}")
-        print(f"Total Cost: {solution['total_cost']:.2f}")  # Print total cost
+    main()
