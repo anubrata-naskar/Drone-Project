@@ -2,7 +2,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
-import time
 
 # Function to read the file and extract relevant data
 def read_cvrp_file(file_path):
@@ -22,7 +21,6 @@ def read_cvrp_file(file_path):
             continue
 
         if parts[0] == "COMMENT" and "No of trucks" in line:
-            # Extract number of trucks correctly by cleaning the line
             num_trucks = int(''.join(filter(str.isdigit, line.split("No of trucks:")[-1])))
 
         elif parts[0] == "CAPACITY":
@@ -64,7 +62,7 @@ def distance_matrix_from_xy(x_coordinates, y_coordinates):
 
 # Clarke-Wright Savings Algorithm
 def clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands):
-    n_patients = len(demands) - 1  # Exclude depot
+    n_patients = len(demands) - 1  
     distances_df = distance_matrix_from_xy(x_coords, y_coords)
 
     nodes = pd.DataFrame({'d0': distances_df.iloc[:, 0], 'demand': [demands[i + 1] for i in range(len(demands))]})
@@ -154,15 +152,60 @@ def two_opt(route, dist_matrix):
                     improved = True
     return best_route
 
+def relocate(route, dist_matrix):
+    best_route = route[:]
+    best_distance = route_distance(best_route, dist_matrix)
+
+    for i in range(1, len(route) - 1):
+        node = best_route[i]
+        temp_route = best_route[:i] + best_route[i+1:]
+
+        for j in range(1, len(temp_route)):
+            new_route = temp_route[:j] + [node] + temp_route[j:]
+            new_distance = route_distance(new_route, dist_matrix)
+
+            if new_distance < best_distance:
+                best_route, best_distance = new_route, new_distance
+
+    return best_route
+
+def swap_move(routes, dist_matrix):
+    best_routes = [r[:] for r in routes]
+    best_distance = sum(route_distance(r, dist_matrix) for r in best_routes)
+
+    for i in range(len(routes)):
+        for j in range(i + 1, len(routes)):
+            route1, route2 = routes[i], routes[j]
+
+            for idx1 in range(1, len(route1) - 1):
+                for idx2 in range(1, len(route2) - 1):
+                    new_route1 = route1[:]
+                    new_route2 = route2[:]
+                    new_route1[idx1], new_route2[idx2] = new_route2[idx2], new_route1[idx1]
+
+                    new_total_distance = (route_distance(new_route1, dist_matrix) +
+                                          route_distance(new_route2, dist_matrix))
+
+                    if new_total_distance < best_distance:
+                        best_routes[i], best_routes[j] = new_route1, new_route2
+                        best_distance = new_total_distance
+
+    return best_routes
+
 def local_search(routes, dist_matrix):
     improvement = True
+
     while improvement:
-        new_routes = [two_opt(route, dist_matrix) for route in routes]
+        new_routes = [min([two_opt(r, dist_matrix), relocate(r, dist_matrix)], key=lambda r: route_distance(r, dist_matrix)) for r in routes]
+        new_routes = swap_move(new_routes, dist_matrix)
+
         if sum(route_distance(r, dist_matrix) for r in new_routes) < sum(route_distance(r, dist_matrix) for r in routes):
             routes = new_routes
         else:
             improvement = False
+
     return routes
+
 
 # Main Execution
 if __name__ == "__main__":
