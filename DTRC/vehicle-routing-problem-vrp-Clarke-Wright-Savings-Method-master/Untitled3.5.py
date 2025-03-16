@@ -194,82 +194,108 @@ def clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands):
 
 
 def apply_dtrc(truck_routes, drone_nodes, distances_df, demands):
-    drone_routes = [[] for _ in range(2)]  # Two drones
+    # Each truck now has its own pair of drones
+    all_drone_routes = []
     used_nodes = set()  # Track nodes assigned to drones
-    drone_idx = 0
-    
-    # Deep copy of truck routes to modify
     modified_truck_routes = [route.copy() for route in truck_routes]
     
+    # Process each truck route separately
     for route_idx, truck_route in enumerate(truck_routes):
-        possible_takeoff_nodes = [node for node in truck_route[1:-1] if node in drone_nodes]
+        # Initialize two drones for this specific truck
+        truck_drone_routes = [[] for _ in range(2)]
+        drone_idx = 0  # Alternate between the two drones for this truck
         
-        for takeoff_node in possible_takeoff_nodes:
+        # Consider all nodes in the truck route as potential takeoff points
+        for takeoff_idx in range(1, len(truck_route)-1):
+            takeoff_node = truck_route[takeoff_idx]
+            
+            # Skip if this node is already used by a drone
             if takeoff_node in used_nodes:
                 continue
                 
             # Find potential delivery nodes for this takeoff node
+            # Only consider nodes that are in this truck's route
             potential_deliveries = []
+            truck_node_set = set(truck_route)
             
-            for candidate in drone_nodes.get(takeoff_node, []):
-                if candidate not in used_nodes:
-                    D = distances_df.iloc[takeoff_node, candidate]
-                    W = demands[candidate + 1] if candidate + 1 in demands else demands[candidate]  # Handle indexing
-                    ratio = D / W
-                    potential_deliveries.append((candidate, D, W, ratio))
+            for delivery_idx in range(1, len(truck_route)-1):
+                delivery_node = truck_route[delivery_idx]
+                
+                # Skip if it's the takeoff node or already used
+                if delivery_node == takeoff_node or delivery_node in used_nodes:
+                    continue
+                
+                # Only consider nodes that appear AFTER the takeoff node in the route
+                if truck_route.index(delivery_node) > takeoff_idx:
+                    # Get weight (handle different indexing in demands dictionary)
+                    weight = demands.get(delivery_node+1, demands.get(delivery_node, 0))
+                    
+                    # Only include if within drone capacity
+                    if weight <= 35:
+                        D = distances_df.iloc[takeoff_node, delivery_node]
+                        ratio = D / max(1, weight)  # Avoid division by zero
+                        potential_deliveries.append((delivery_node, D, weight, ratio))
             
-            # Sort potential deliveries by ratio (most efficient first)
+            # Sort potential deliveries by efficiency ratio (most efficient first)
             potential_deliveries.sort(key=lambda x: x[3])
             
             # Build multi-delivery route with capacity constraint
             if potential_deliveries:
                 delivery_route = []
                 current_load = 0
+                delivery_indices = []  # Track indices for ordering
                 
                 for delivery_node, distance, weight, ratio in potential_deliveries:
                     # Check if adding this delivery exceeds drone capacity
                     if current_load + weight <= 35:  # 35 unit capacity constraint
                         delivery_route.append(delivery_node)
+                        delivery_indices.append(truck_route.index(delivery_node))
                         current_load += weight
-                        used_nodes.add(delivery_node)
-                        
-                        # Remove delivery node from truck routes
-                        for idx, route in enumerate(modified_truck_routes):
-                            if delivery_node in route:
-                                modified_truck_routes[idx].remove(delivery_node)
+                        used_nodes.add(delivery_node)  # Mark as used
                 
                 # If we have deliveries, find a landing node on the SAME truck route
                 if delivery_route:
-                    # Find landing node from the same truck route
-                    # Consider nodes that come AFTER the takeoff node in the route
-                    takeoff_idx = truck_route.index(takeoff_node)
-                    potential_landing_nodes = [node for node in truck_route[takeoff_idx+1:-1] 
-                                              if node not in used_nodes and node != takeoff_node 
-                                              and node not in delivery_route]
+                    # Sort deliveries based on their order in the truck route
+                    # This ensures drone visits nodes in the same order as the truck would
+                    delivery_with_idx = list(zip(delivery_route, delivery_indices))
+                    delivery_with_idx.sort(key=lambda x: x[1])  # Sort by truck route order
+                    delivery_route = [node for node, _ in delivery_with_idx]
+                    
+                    # Find landing node that comes AFTER all deliveries in the route
+                    last_delivery_idx = max(delivery_indices)
+                    potential_landing_nodes = []
+                    
+                    for landing_idx in range(last_delivery_idx+1, len(truck_route)-1):
+                        landing_node = truck_route[landing_idx]
+                        if landing_node not in used_nodes and landing_node != takeoff_node and landing_node not in delivery_route:
+                            landing_distance = distances_df.iloc[delivery_route[-1], landing_node]
+                            potential_landing_nodes.append((landing_node, landing_distance))
                     
                     landing_node = None
                     if potential_landing_nodes:
-                        # Choose landing node that minimizes last delivery to landing distance
-                        min_landing_distance = float('inf')
-                        for node in potential_landing_nodes:
-                            landing_distance = distances_df.iloc[delivery_route[-1], node]
-                            if landing_distance < min_landing_distance:
-                                min_landing_distance = landing_distance
-                                landing_node = node
+                        # Choose landing node that minimizes distance from last delivery
+                        landing_node, _ = min(potential_landing_nodes, key=lambda x: x[1])
                     else:
-                        # If no suitable landing node found after takeoff, 
-                        # can use the takeoff node itself (return to same spot)
+                        # If no suitable landing node found, use the takeoff node (return to same spot)
                         landing_node = takeoff_node
                     
                     if landing_node:
                         # Create complete drone route: takeoff -> [deliveries] -> landing
                         complete_route = [takeoff_node] + delivery_route + [landing_node]
-                        drone_routes[drone_idx].append(complete_route)
+                        truck_drone_routes[drone_idx].append(complete_route)
                         
-                        drone_idx = (drone_idx + 1) % 2  # Alternate between two drones
+                        # Alternate between drones for this truck
+                        drone_idx = (drone_idx + 1) % 2
+                        
+                        # Remove delivery nodes from this truck's route
+                        for node in delivery_route:
+                            if node in modified_truck_routes[route_idx]:
+                                modified_truck_routes[route_idx].remove(node)
+        
+        # Add this truck's drone routes to the overall collection
+        all_drone_routes.append(truck_drone_routes)
     
-    return drone_routes, modified_truck_routes
-
+    return all_drone_routes, modified_truck_routes
 
 
 # Plot Truck Routes (after Clarke-Wright Savings)
@@ -299,25 +325,33 @@ def plot_truck_routes(truck_routes, x_coords, y_coords):
     plt.grid()
     plt.show()
 
-def plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_nodes):
-    plt.figure(figsize=(10, 6))
+def plot_combined_routes(truck_routes, all_drone_routes, x_coords, y_coords, drone_nodes):
+    plt.figure(figsize=(12, 8))
+    
+    # Colors for different truck routes
+    truck_colors = ['blue', 'green', 'purple', 'brown', 'orange']
+    # Colors for drone routes (matching their trucks but lighter)
+    drone_colors = ['red', 'lime', 'magenta', 'chocolate', 'gold']
     
     # Plot truck routes with arrows
     for idx, route in enumerate(truck_routes):
+        truck_color = truck_colors[idx % len(truck_colors)]
         route_nodes = []
+        
         # Collect route nodes for plotting
         for i in range(len(route) - 1):
             plt.arrow(x_coords[route[i]], y_coords[route[i]], 
                       x_coords[route[i+1]] - x_coords[route[i]], 
                       y_coords[route[i+1]] - y_coords[route[i]], 
-                      head_width=0.5, length_includes_head=True, color='blue', alpha=0.8)
+                      head_width=0.5, length_includes_head=True, color=truck_color, alpha=0.8)
             route_nodes.append(route[i])
         route_nodes.append(route[-1])  # Add last node
         
         # Plot truck stops
         plt.scatter([x_coords[node] for node in route_nodes], 
                     [y_coords[node] for node in route_nodes], 
-                    color='blue', marker='o', alpha=0.7, label="Truck Route" if idx == 0 else None)
+                    color=truck_color, marker='o', alpha=0.7, 
+                    label=f"Truck {idx+1} Route" if idx == 0 else f"Truck {idx+1}")
         
         # Label nodes
         for node in route_nodes:
@@ -325,33 +359,40 @@ def plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_n
                      verticalalignment='bottom', horizontalalignment='right')
 
     # Collect all nodes involved in drone operations
-    drone_operation_nodes = set()
     delivery_only_nodes = set()
     takeoff_nodes = set()
     landing_nodes = set()
     
-    # Plot drone routes with dashed arrows
-    for idx, route_group in enumerate(drone_routes):
-        for route in route_group:
-            takeoff = route[0]
-            landing = route[-1]
-            delivery_nodes = route[1:-1]  # All nodes between takeoff and landing
-            
-            # Add to sets for later plotting
-            takeoff_nodes.add(takeoff)
-            landing_nodes.add(landing)
-            delivery_only_nodes.update(delivery_nodes)
-            drone_operation_nodes.update([takeoff, landing] + delivery_nodes)
-            
-            # Draw arrows for drone flight path with multi-point delivery
-            prev_node = takeoff
-            for next_node in route[1:]:  # Start from first delivery node
-                plt.arrow(x_coords[prev_node], y_coords[prev_node], 
-                         x_coords[next_node] - x_coords[prev_node], 
-                         y_coords[next_node] - y_coords[prev_node], 
-                         head_width=0.5, length_includes_head=True, color='red', 
-                         linestyle='dashed', alpha=0.7)
-                prev_node = next_node
+    # Plot drone routes with dashed arrows - each truck's drones
+    for truck_idx, truck_drone_routes in enumerate(all_drone_routes):
+        drone_color = drone_colors[truck_idx % len(drone_colors)]
+        
+        for drone_idx, drone_route_list in enumerate(truck_drone_routes):
+            for route in drone_route_list:
+                takeoff = route[0]
+                landing = route[-1]
+                delivery_nodes = route[1:-1]  # All nodes between takeoff and landing
+                
+                # Add to sets for later plotting
+                takeoff_nodes.add(takeoff)
+                landing_nodes.add(landing)
+                delivery_only_nodes.update(delivery_nodes)
+                
+                # Draw arrows for drone flight path with multi-point delivery
+                prev_node = takeoff
+                for next_node in route[1:]:  # Start from first delivery node
+                    plt.arrow(x_coords[prev_node], y_coords[prev_node], 
+                             x_coords[next_node] - x_coords[prev_node], 
+                             y_coords[next_node] - y_coords[prev_node], 
+                             head_width=0.5, length_includes_head=True, color=drone_color, 
+                             linestyle='dashed', alpha=0.7)
+                    prev_node = next_node
+                
+                # Add a small annotation to show which drone it is
+                mid_x = (x_coords[takeoff] + x_coords[landing]) / 2
+                mid_y = (y_coords[takeoff] + y_coords[landing]) / 2
+                plt.text(mid_x, mid_y, f"T{truck_idx+1}D{drone_idx+1}", fontsize=8, 
+                         color=drone_color, weight='bold')
     
     # Plot special nodes with distinct markers
     # Takeoff nodes
@@ -385,28 +426,39 @@ def plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_n
     plt.legend()
     plt.xlabel("X Coordinate")
     plt.ylabel("Y Coordinate")
-    plt.title("Combined Truck and Drone Routes")
+    plt.title("Combined Truck and Drone Routes (Each Truck with 2 Drones)")
     plt.grid(True)
     plt.show()
 
-def calculate_total_cost(truck_routes, drone_routes, distances_df):
+def calculate_total_cost(truck_routes, all_drone_routes, distances_df):
     # Calculate full cost (including depot connections)
     total_cost = 0
     for route in truck_routes:
-        total_cost += calculate_route_cost(route, distances_df)
+        route_cost = calculate_route_cost(route, distances_df)
+        total_cost += route_cost
+    
     print("Only truck cost - ", total_cost)    
     
-    # Calculate drone cost - considering multi-delivery routes
+    # Calculate drone cost - considering multi-delivery routes for each truck's drones
     drone_cost = 0
-    for route_group in drone_routes:
-        for route in route_group:
-            # For each segment in the drone route
-            for i in range(len(route) - 1):
-                # Drones are 1.5x faster than trucks
-                drone_cost += distances_df.iloc[route[i], route[i+1]] / 1.5
+    for truck_idx, truck_drone_routes in enumerate(all_drone_routes):
+        truck_drone_cost = 0
+        for drone_route_list in truck_drone_routes:
+            for route in drone_route_list:
+                # For each segment in the drone route
+                route_cost = 0
+                for i in range(len(route) - 1):
+                    # Drones are 1.5x faster than trucks
+                    segment_cost = distances_df.iloc[route[i], route[i+1]] / 1.5
+                    route_cost += segment_cost
+                
+                truck_drone_cost += route_cost
+        
+        print(f"Truck {truck_idx+1} drone cost - {truck_drone_cost}")
+        drone_cost += truck_drone_cost
     
     total_cost += drone_cost
-    print("Drone cost - ", drone_cost)
+    print("Total drone cost - ", drone_cost)
     
     # Calculate delivery-only cost (excluding depot connections)
     delivery_cost = 0
@@ -417,15 +469,17 @@ def calculate_total_cost(truck_routes, drone_routes, distances_df):
                 delivery_cost += distances_df.iloc[route[i], route[i+1]]
     
     # Add drone delivery costs (these are all part of delivery)
-    for route_group in drone_routes:
-        for route in route_group:
-            for i in range(len(route) - 1):
-                delivery_cost += distances_df.iloc[route[i], route[i+1]] / 1.5  # Accounting for drone speed
+    for truck_drone_routes in all_drone_routes:
+        for drone_route_list in truck_drone_routes:
+            for route in drone_route_list:
+                for i in range(len(route) - 1):
+                    # Accounting for drone speed
+                    delivery_cost += distances_df.iloc[route[i], route[i+1]] / 1.5
     
     return total_cost, delivery_cost
 
 # Main Execution
-file_path = "A-n32-k5.vrp"
+file_path = "A-n34-k5.vrp"
 num_trucks, capacity, x_coords, y_coords, demands = read_cvrp_file(file_path)
 truck_routes = clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands)
 
@@ -437,7 +491,7 @@ plot_truck_routes(truck_routes, x_coords, y_coords)
 # Apply DTRC algorithm
 distances_df = distance_matrix_from_xy(x_coords, y_coords)
 drone_nodes = {1: [12, 15], 4: [7, 11]}
-drone_routes,truck_routes = apply_dtrc(truck_routes, drone_nodes, distances_df, demands)
+drone_routes, truck_routes = apply_dtrc(truck_routes, drone_nodes, distances_df, demands)
 
 # Plot combined truck and drone routes
 print("-----Truck routes-----")

@@ -381,23 +381,39 @@ def plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_n
     plt.grid(True)
     plt.show()
 
-# Calculate total cost
 def calculate_total_cost(truck_routes, drone_routes, distances_df):
+    # Calculate full cost (including depot connections)
     total_cost = 0
-
-    # Calculate truck route costs
     for route in truck_routes:
         total_cost += calculate_route_cost(route, distances_df)
-
-    # Calculate drone route costs
+    print("Only truck cost - ",total_cost)    
+    
     for route_group in drone_routes:
         for route in route_group:
-            total_cost += calculate_route_cost(route, distances_df)
-
-    return total_cost
+            # For drone routes, add the cost of takeoff->delivery->landing
+            drone_cost = 0
+            for i in range(len(route) - 1):
+                drone_cost += distances_df.iloc[route[i], route[i+1]]
+            total_cost += drone_cost
+    
+    # Calculate delivery-only cost (excluding depot connections)
+    delivery_cost = 0
+    for route in truck_routes:
+        if len(route) > 2:  # Only if route has at least one delivery point
+            # Sum distances between delivery points only
+            for i in range(1, len(route) - 2):  # Start at first delivery, end before last delivery
+                delivery_cost += distances_df.iloc[route[i], route[i+1]]
+    
+    # Add drone costs to delivery cost (these are all part of delivery)
+    for route_group in drone_routes:
+        for route in route_group:
+            for i in range(len(route) - 1):
+                delivery_cost += distances_df.iloc[route[i], route[i+1]]
+    
+    return total_cost, delivery_cost
 
 # Main Execution
-file_path = "A-n33-k5.vrp"
+file_path = "A-n32-k5.vrp"
 num_trucks, capacity, x_coords, y_coords, demands = read_cvrp_file(file_path)
 truck_routes = clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands)
 
@@ -419,5 +435,6 @@ print(drone_routes)
 plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_nodes)
 
 # Print total cost
-total_cost = calculate_total_cost(truck_routes, drone_routes, distances_df)
+total_cost,delivery_cost = calculate_total_cost(truck_routes, drone_routes, distances_df)
 print(f"Total Cost: {total_cost}")
+print(f"delivery Cost: {delivery_cost}")
