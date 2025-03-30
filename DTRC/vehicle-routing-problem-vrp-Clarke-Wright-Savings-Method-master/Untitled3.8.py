@@ -107,34 +107,38 @@ def calculate_route_cost(route, dist_matrix):
     return cost
 
 
-# Clarke-Wright Savings Algorithm with return-cost optimization
+import pandas as pd
+
 def clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands):
     distances_df = distance_matrix_from_xy(x_coords, y_coords)
 
-    nodes = pd.DataFrame({'d0': distances_df.iloc[:, 0], 'demand': [demands[i + 1] for i in range(len(demands))]})
+    # Create a dataframe with demand info
+    nodes = pd.DataFrame({'d0': distances_df.iloc[:, 0], 
+                          'demand': [demands[i + 1] for i in range(len(demands))]})
 
+    # Compute Savings Values (Ensure i < j to avoid duplicate pairs)
     savings = {}
-    for r in distances_df.index[1:]:
-        for c in distances_df.columns[1:]:
-            if r != c:
-                key = f'({r},{c})'
-                savings[key] = distances_df.iloc[r, 0] + distances_df.iloc[c, 0] - distances_df.iloc[r, c]
+    for i in range(1, len(nodes)):  # Skip depot (0)
+        for j in range(i + 1, len(nodes)):
+            savings[(i, j)] = distances_df.iloc[i, 0] + distances_df.iloc[j, 0] - distances_df.iloc[i, j]
 
-    sv = pd.DataFrame.from_dict(savings, orient='index', columns=['saving']).sort_values(by='saving', ascending=False)
+    # Sort savings in descending order
+    sv = sorted(savings.items(), key=lambda x: x[1], reverse=True)
 
+    # Initialize routes
     routes = []
-    node_list = list(nodes.index)
-    node_list.remove(0)
+    node_list = set(nodes.index) - {0}  # All nodes except depot
 
     def sum_cap(route):
+        """Calculate total demand of a route."""
         return sum(nodes.demand[node] for node in route)
 
     def merge(route0, route1):
+        """Merge two routes."""
         return route0 + route1
 
-    for link in sv.index:
-        n1, n2 = [int(n) for n in link.strip("()").split(",")]
-
+    # Clarke-Wright Savings Algorithm - Route Merging
+    for (n1, n2), _ in sv:
         route_indices = [-1, -1]
         for i, route in enumerate(routes):
             if n1 in route:
@@ -142,23 +146,23 @@ def clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands):
             if n2 in route:
                 route_indices[1] = i
 
-        if route_indices[0] == route_indices[1] == -1:
+        if route_indices[0] == -1 and route_indices[1] == -1:
             if sum_cap([n1, n2]) <= capacity:
                 routes.append([n1, n2])
-                node_list.remove(n1)
-                node_list.remove(n2)
+                node_list.discard(n1)
+                node_list.discard(n2)
 
         elif route_indices[0] != -1 and route_indices[1] == -1:
             route_idx = route_indices[0]
             if sum_cap(routes[route_idx] + [n2]) <= capacity:
                 routes[route_idx].append(n2)
-                node_list.remove(n2)
+                node_list.discard(n2)
 
         elif route_indices[0] == -1 and route_indices[1] != -1:
             route_idx = route_indices[1]
             if sum_cap(routes[route_idx] + [n1]) <= capacity:
                 routes[route_idx].append(n1)
-                node_list.remove(n1)
+                node_list.discard(n1)
 
         elif route_indices[0] != -1 and route_indices[1] != -1 and route_indices[0] != route_indices[1]:
             if sum_cap(routes[route_indices[0]] + routes[route_indices[1]]) <= capacity:
@@ -167,32 +171,31 @@ def clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands):
                     routes.pop(index)
                 routes.append(merged_route)
 
+    # Assign remaining ungrouped nodes to their own route
     for node in node_list:
         routes.append([node])
 
-    # Ensure routes start and end at depot (0) and consider return cost
+    # Ensure depot (0) is at the start and end of each route
     optimized_routes = []
     for route in routes:
-        route = [0] + route  # Ensure depot at start
-
-        # Choose the best last node by minimizing return cost
-        last_node = min(route[1:], key=lambda node: distances_df.iloc[node, 0])
+        route = [0] + route  # Start at depot
+        last_node = min(route[1:], key=lambda node: distances_df.loc[node, 0])
         route.remove(last_node)
         route.append(last_node)
-        route.append(0)  # Append depot
+        route.append(0)  # End at depot
 
         # Apply optimizations
-        routes = [
-        two_opt(route, distances_df),
-        simple_relocate(route, distances_df),
-        swap_move(route, distances_df)]
-    
-        # Select the route with the minimum cost
-        best_route = min(routes, key=lambda r: calculate_route_cost(r, distances_df))
+        possible_routes = [
+            two_opt(route, distances_df),
+            simple_relocate(route, distances_df),
+            swap_move(route, distances_df)
+        ]
+        
+        # Choose the best optimized route
+        best_route = min(possible_routes, key=lambda r: calculate_route_cost(r, distances_df))
 
         optimized_routes.append(best_route)
 
-    #print(optimized_routes)
     return optimized_routes
 
 
@@ -586,7 +589,7 @@ def calculate_total_cost(truck_routes, all_drone_routes, distances_df):
     return total_cost, delivery_cost
 
 # Main Execution
-file_path = "A-n32-k5.vrp"
+file_path = "A-n33-k5.vrp"
 num_trucks, capacity, x_coords, y_coords, demands = read_cvrp_file(file_path)
 truck_routes = clarke_wright_savings(num_trucks, capacity, x_coords, y_coords, demands)
 
