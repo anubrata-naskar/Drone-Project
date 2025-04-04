@@ -133,23 +133,6 @@ def i_k_means(num_trucks, capacity, x_coords, y_coords, demands, num_iterations=
     # Assign cluster labels
     cluster_labels = cluster_model.labels_
     
-    # Create distance matrix for optimization
-    num_nodes = len(x_coords)
-    distances = np.zeros((num_nodes, num_nodes))
-    for i in range(num_nodes):
-        for j in range(num_nodes):
-            distances[i, j] = math.sqrt((x_coords[i] - x_coords[j])**2 + (y_coords[i] - y_coords[j])**2)
-    
-    # Convert to pandas DataFrame for easier indexing
-    distances_df = pd.DataFrame(distances)
-    
-    # Function to calculate route cost
-    def calculate_route_cost(route, dist_df):
-        cost = 0
-        for i in range(len(route) - 1):
-            cost += dist_df.loc[route[i], route[i+1]]
-        return cost
-    
     # Function to calculate route for a specific cluster
     def construct_cluster_route(cluster_indices):
         # If no nodes in cluster, return depot route
@@ -229,23 +212,34 @@ def i_k_means(num_trucks, capacity, x_coords, y_coords, demands, num_iterations=
         route = construct_cluster_route(cluster_indices)
         initial_routes.append(route)
     
-    # Apply local search to optimize each route
+    # Create distance matrix for optimizations
+    num_nodes = len(x_coords)
+    distances = np.zeros((num_nodes, num_nodes))
+    for i in range(num_nodes):
+        for j in range(num_nodes):
+            distances[i, j] = math.sqrt((x_coords[i] - x_coords[j])**2 + (y_coords[i] - y_coords[j])**2)
+    
+    # Convert to pandas DataFrame for compatibility with the optimization functions
+    import pandas as pd
+    distances_df = pd.DataFrame(distances)
+    
+    # Apply optimization techniques to each route
     optimized_routes = []
     for route in initial_routes:
-        # Skip routes with just depot-depot
+        # Skip optimization for routes with just depot-depot
         if len(route) <= 2:
             optimized_routes.append(route)
             continue
             
-        # Apply local search methods and select best
-        route_options = [
+        # Apply all optimization techniques
+        possible_routes = [
             two_opt(route, distances_df),
             simple_relocate(route, distances_df),
             swap_move(route, distances_df)
         ]
         
-        # Select the route with minimum cost
-        best_route = min(route_options, key=lambda r: calculate_route_cost(r, distances_df))
+        # Choose the best optimized route
+        best_route = min(possible_routes, key=lambda r: calculate_route_cost(r, distances_df))
         optimized_routes.append(best_route)
     
     return optimized_routes
@@ -641,7 +635,7 @@ def calculate_total_cost(truck_routes, all_drone_routes, distances_df):
     return total_cost, delivery_cost
 
 # Main Execution
-file_path = "A-n34-k5.vrp"
+file_path = "A-n32-k5.vrp"
 num_trucks, capacity, x_coords, y_coords, demands = read_cvrp_file(file_path)
 num_trucks = int(str(num_trucks)[0])
 print(f"Number of trucks: {num_trucks}")
@@ -658,26 +652,10 @@ drone_nodes = {1: [12, 15], 4: [7, 11]}
 drone_routes, truck_routes = apply_dtrc(truck_routes, drone_nodes, distances_df, demands)
 
 # Plot combined truck and drone routes
-# For truck routes
 print("-----Truck routes-----")
-for route in truck_routes:
-    # Convert each element in the route to a standard Python int
-    clean_route = [int(node) for node in route]
-    print(clean_route)
-
-# For drone routes
+print(truck_routes)
 print("-----Drone routes-----")
-for drone_route in drone_routes:
-    # Clean up the nested structure
-    clean_drone_route = []
-    for segment_group in drone_route:
-        clean_segment_group = []
-        for segment in segment_group:
-            # Convert each node in the segment to a standard Python int
-            clean_segment = [int(node) for node in segment]
-            clean_segment_group.append(clean_segment)
-        clean_drone_route.append(clean_segment_group)
-    print(clean_drone_route)
+print(drone_routes)
 plot_combined_routes(truck_routes, drone_routes, x_coords, y_coords, drone_nodes)
 
 # Print total cost
