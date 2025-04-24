@@ -1,9 +1,13 @@
+!pip install networkx
+
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import math
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
+import networkx as nx
+from scipy.sparse.csgraph import minimum_spanning_tree
 
 def battery_model(total_payload): 
   return (155885 / ((200 + total_payload) ** 1.5))
@@ -92,13 +96,70 @@ def simple_relocate(route, dist_matrix):
 
 # Swap move optimization
 def swap_move(route, dist_matrix):
-    best = route    
+    best = route
     for i in range(1, len(route) - 1):
         for j in range(i + 1, len(route)):
             new_route = route[:i] + [route[j]] + route[i+1:j] + [route[i]] + route[j+1:]
             if calculate_route_cost(new_route, dist_matrix) < calculate_route_cost(best, dist_matrix):
                 best = new_route
     return best
+
+def christofides_route(route, dist_matrix):
+    if len(route) <= 3:
+        return route
+
+    nodes = route[1:-1]
+    n = len(nodes)
+    
+    if n <= 2:
+        return route
+        
+    sub_dist = np.zeros((n, n))
+    for i in range(n):
+        for j in range(n):
+            sub_dist[i, j] = dist_matrix[nodes[i], nodes[j]]
+    
+    mst = minimum_spanning_tree(sub_dist).toarray()
+    mst_graph = nx.Graph()
+    for i in range(n):
+        for j in range(n):
+            if mst[i, j] > 0:
+                mst_graph.add_edge(i, j, weight=mst[i, j])
+    
+    odd_nodes = [node for node, degree in mst_graph.degree() if degree % 2 == 1]
+    
+    odd_node_pairs = []
+    odd_sub_dist = np.zeros((len(odd_nodes), len(odd_nodes)))
+    for i in range(len(odd_nodes)):
+        for j in range(len(odd_nodes)):
+            if i != j:
+                odd_sub_dist[i, j] = sub_dist[odd_nodes[i], odd_nodes[j]]
+    
+    odd_graph = nx.Graph()
+    for i in range(len(odd_nodes)):
+        for j in range(i+1, len(odd_nodes)):
+            odd_graph.add_edge(odd_nodes[i], odd_nodes[j], weight=-odd_sub_dist[i, j])
+    
+    matching = nx.algorithms.matching.max_weight_matching(odd_graph, maxcardinality=True)
+    
+    eulerian_graph = nx.MultiGraph(mst_graph)
+    for edge in matching:
+        eulerian_graph.add_edge(edge[0], edge[1], weight=sub_dist[edge[0], edge[1]])
+    
+    eulerian_tour = list(nx.eulerian_circuit(eulerian_graph, source=0))
+    
+    visited = set()
+    tour = []
+    for edge in eulerian_tour:
+        if edge[0] not in visited:
+            tour.append(edge[0])
+            visited.add(edge[0])
+    
+    optimized_nodes = [nodes[i] for i in tour]
+    
+    optimized_route = [route[0]] + optimized_nodes + [route[0]]
+    
+    return optimized_route
 
 # Calculate route cost
 def calculate_route_cost(route, dist_matrix):
@@ -231,15 +292,8 @@ def i_k_means(num_trucks, capacity, x_coords, y_coords, demands, num_iterations=
             continue
             
         # Apply all optimization techniques
-        possible_routes = [
-            two_opt(route, distances_df),
-            simple_relocate(route, distances_df),
-            swap_move(route, distances_df)
-        ]
-        
-        # Choose the best optimized route
-        best_route = min(possible_routes, key=lambda r: calculate_route_cost(r, distances_df))
-        optimized_routes.append(best_route)
+        optimized_route = christofides_route(route, distances)
+        optimized_routes.append(optimized_route)
     
     return optimized_routes
 
@@ -637,7 +691,7 @@ def calculate_total_cost(truck_routes, all_drone_routes, distances_df):
     return total_cost, delivery_cost
 
 # Main Execution
-file_path = "E-n51-k5.vrp"
+file_path = "A-n36-k5.vrp"
 num_trucks, capacity, x_coords, y_coords, demands = read_cvrp_file(file_path)
 num_trucks = int(str(num_trucks)[0])
 print(f"Number of trucks: {num_trucks}")
